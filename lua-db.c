@@ -3,48 +3,37 @@
 #include <lauxlib.h>
 
 #include <string.h>
-
-static lua_State * g_dbL = NULL;
+#include <assert.h>
 
 #define DATA 1
 #define INDEX 2
+#define THREAD_MAX 32
 
-static int
-db_open(lua_State *L) {
+static lua_State * g_dbL = NULL;
+static int g_threadcount = 1;
+static __thread int t_threadid = 0;
+static __thread int t_threadindex = 0;
+
+
+static void
+_init(lua_State *L) {
 	const char * loader = luaL_checkstring(L,1);
-	if (g_dbL) {
-		lua_State * dbL = g_dbL;
-		lua_getfield(dbL, LUA_REGISTRYINDEX , "loader");
-		if (lua_type(dbL,-1) != LUA_TSTRING) {
-			lua_pop(dbL,2);
-			return luaL_error(L, "loader is not exist in db state");
-		}
-		const char * db_loader = lua_tostring(dbL,-1);
-		if (strcmp(loader,db_loader) != 0) {
-			lua_pop(dbL,2);
-			return luaL_error(L, "db state loader (%s) is not the same with (%s)", db_loader, loader);
-		}
-		lua_pop(dbL,2);
-		int mem = lua_gc(dbL, LUA_GCCOUNT , 0);
-		lua_pushinteger(L, mem);
-		return 1;
-	}
 	lua_State * dbL = luaL_newstate();
-	lua_gc(dbL, LUA_GCSTOP, 0);  /* stop collector during initialization */
-	luaL_openlibs(dbL);  /* open libraries */
+	lua_gc(dbL, LUA_GCSTOP, 0);
+	luaL_openlibs(dbL);  
 	lua_gc(dbL, LUA_GCRESTART, 0);
 
 	int top = lua_gettop(dbL);
 	int err = luaL_dofile(dbL, loader);
 	if (err) {
-		return luaL_error(L, "%s" , lua_tostring(dbL,-1));
+		luaL_error(L, "%s" , lua_tostring(dbL,-1));
 	}
 	lua_settop(dbL, top+1);
 	lua_insert(dbL, DATA);
 
 	if (lua_type(dbL, DATA) != LUA_TTABLE) {
-		lua_settop(dbL,0);
-		return luaL_error(L, "%s need return a table", loader);
+		lua_close(dbL);
+		luaL_error(L, "%s need return a table", loader);
 	}
 
 	lua_newtable(dbL);
@@ -56,8 +45,8 @@ db_open(lua_State *L) {
 
 	err = luaL_loadstring(dbL, posloader);
 	if (err) {
-		lua_settop(dbL,0);
-		return luaL_error(L, "load posload error");
+		lua_close(dbL);
+		luaL_error(L, "load posload error");
 	}
 
 	lua_pushvalue(dbL,DATA);
@@ -66,14 +55,15 @@ db_open(lua_State *L) {
 	err = lua_pcall(dbL, 0, 1, 0);
 
 	if (err) {
-		return luaL_error(L, "posload : %s" , lua_tostring(dbL,-1));
+		lua_close(dbL);
+		luaL_error(L, "posload : %s" , lua_tostring(dbL,-1));
 	}
 
 	lua_insert(dbL, INDEX);
 
 	if (lua_type(dbL, INDEX) != LUA_TTABLE) {
-		lua_settop(dbL,0);
-		return luaL_error(L, "posload need return a table");
+		lua_close(dbL);
+		luaL_error(L, "posload need return a table");
 	}
 
 	lua_pushstring(dbL, loader);
@@ -81,20 +71,78 @@ db_open(lua_State *L) {
 
 	lua_settop(dbL, 2);
 
+	lua_checkstack(dbL , THREAD_MAX + 2);
+	int i;
+	for (i=0;i < THREAD_MAX ; i++) {
+		lua_State * thread = lua_newthread(dbL);
+		lua_checkstack(thread , LUA_MINSTACK);
+		lua_pushvalue(dbL , DATA);
+		lua_pushvalue(dbL , INDEX);
+		lua_xmove(dbL , thread , 2);
+	}
+
+	lua_remove(dbL , 1);
+	lua_remove(dbL , 1);
+
 	lua_gc(dbL, LUA_GCCOLLECT , 0);
-
-	int mem = lua_gc(dbL, LUA_GCCOUNT , 0);
-
-	lua_pushinteger(L, mem);
+	lua_gc(dbL, LUA_GCSTOP, 0);
 
 	g_dbL = dbL;
+}
 
+
+static int
+db_open(lua_State *L) {
+	int threadid = __sync_val_compare_and_swap (&t_threadid, 0, 1);
+	if (threadid == 0) {
+		t_threadindex = __sync_fetch_and_add (&g_threadcount, 1);
+
+		if (t_threadindex == 1) {
+			// init
+			_init(L);
+		}
+
+		__sync_synchronize();
+
+		if (t_threadindex > THREAD_MAX) {
+			return luaL_error(L, "The number of threads is too a lot");
+		}
+		
+	} else {
+		while (t_threadindex == 0) {
+			__sync_synchronize();
+		}
+
+		if (g_dbL == NULL) {
+			return luaL_error(L, "Global database init failed");
+		}
+
+		lua_State * dbL = lua_tothread(g_dbL, t_threadindex);
+		assert(dbL);
+
+		const char * loader = luaL_checkstring(L,1);
+
+		lua_getfield(dbL, LUA_REGISTRYINDEX , "loader");
+		if (lua_type(dbL,-1) != LUA_TSTRING) {
+			lua_settop(dbL, 2);
+			return luaL_error(L, "loader is not exist in db state");
+		}
+		const char * db_loader = lua_tostring(dbL,-1);
+		if (strcmp(loader,db_loader) != 0) {
+			lua_settop(dbL, 2);
+			return luaL_error(L, "db state loader is not the same with (%s)", loader);
+		}
+		lua_settop(dbL, 2);
+	}
+	int mem = lua_gc(g_dbL, LUA_GCCOUNT , 0);
+	lua_pushinteger(L, mem);
 	return 1;
 }
 
 static int
 db_get(lua_State *L) {
-	lua_State * dbL = g_dbL;
+	lua_State * dbL = lua_tothread(g_dbL, t_threadid);
+
 	size_t sz = 0;
 	const char * key = luaL_checklstring(L,1,&sz);
 	lua_pushlstring(dbL,key,sz);
@@ -142,7 +190,7 @@ db_get(lua_State *L) {
 
 static int
 db_expend(lua_State *L) {
-	lua_State * dbL = g_dbL;
+	lua_State * dbL = lua_tothread(g_dbL, t_threadid);
 	int type = lua_type(L,1);
 	const char * key = NULL;
 	switch (type) {
