@@ -1,0 +1,9 @@
+database load data in an unique lua state , and share data among multi-states in the same process.
+
+database.open(loader name)  --  opens database state.
+
+database.get(key) -- read a key from database state.
+
+See test.lua and load.lua for more details.
+
+
