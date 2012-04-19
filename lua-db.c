@@ -4,7 +4,7 @@
 
 #include <string.h>
 
-static lua_State *dbL = NULL;
+static lua_State * g_dbL = NULL;
 
 #define DATA 1
 #define INDEX 2
@@ -12,7 +12,8 @@ static lua_State *dbL = NULL;
 static int
 db_open(lua_State *L) {
 	const char * loader = luaL_checkstring(L,1);
-	if (dbL) {
+	if (g_dbL) {
+		lua_State * dbL = g_dbL;
 		lua_getfield(dbL, LUA_REGISTRYINDEX , "loader");
 		if (lua_type(dbL,-1) != LUA_TSTRING) {
 			lua_pop(dbL,2);
@@ -28,7 +29,7 @@ db_open(lua_State *L) {
 		lua_pushinteger(L, mem);
 		return 1;
 	}
-	dbL = luaL_newstate();
+	lua_State * dbL = luaL_newstate();
 	lua_gc(dbL, LUA_GCSTOP, 0);  /* stop collector during initialization */
 	luaL_openlibs(dbL);  /* open libraries */
 	lua_gc(dbL, LUA_GCRESTART, 0);
@@ -86,11 +87,14 @@ db_open(lua_State *L) {
 
 	lua_pushinteger(L, mem);
 
+	g_dbL = dbL;
+
 	return 1;
 }
 
 static int
 db_get(lua_State *L) {
+	lua_State * dbL = g_dbL;
 	size_t sz = 0;
 	const char * key = luaL_checklstring(L,1,&sz);
 	lua_pushlstring(dbL,key,sz);
@@ -138,6 +142,7 @@ db_get(lua_State *L) {
 
 static int
 db_expend(lua_State *L) {
+	lua_State * dbL = g_dbL;
 	int type = lua_type(L,1);
 	const char * key = NULL;
 	switch (type) {
