@@ -136,7 +136,8 @@ db_open(lua_State *L) {
 	}
 	int mem = lua_gc(g_dbL, LUA_GCCOUNT , 0);
 	lua_pushinteger(L, mem);
-	return 1;
+	lua_pushinteger(L, t_threadindex);
+	return 2;
 }
 
 static int
