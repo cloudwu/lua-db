@@ -2,7 +2,9 @@ local e = {}
 
 e.A = {}
 
-e.A[123] = 1
+for i = 1, 100 do
+	e.A[i] = i * 2
+end
 
 e.A.B = function() return "hello" end
 

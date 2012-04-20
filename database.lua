@@ -20,6 +20,8 @@ local posload = [[
 			elseif t == "function" then
 				ret[key] = v
 				ret[v] = string.dump(v)
+			else
+				ret[key] = v
 			end
 		end
 		return index

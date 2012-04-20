@@ -5,7 +5,7 @@
 #include <lualib.h>
 #include <assert.h>
 
-#define MAX 30
+#define MAX 10
 
 static lua_State *
 _new(const char * name) {
