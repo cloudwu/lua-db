@@ -4,8 +4,9 @@
 #include <lauxlib.h>
 #include <lualib.h>
 #include <assert.h>
+#include <stdlib.h>
 
-#define MAX 10
+#define MAX 20
 
 static lua_State *
 _new(const char * name) {
@@ -14,7 +15,13 @@ _new(const char * name) {
 	luaL_openlibs(L);  
 	lua_gc(L, LUA_GCRESTART, 0);
 	int err = luaL_dofile(L, name);
-	assert(err == 0);
+	if (err != 0) {
+		printf("err: %p :",L);
+		fflush(stdout);
+		printf("%s\n", lua_tostring(L,-1));
+		exit(1);
+	}
+
 	return L;
 }
 

@@ -11,9 +11,8 @@
 
 static lua_State * g_dbL = NULL;
 static int g_threadcount = 1;
-static __thread int t_threadid = 0;
+static __thread int t_threadinit = 0;
 static __thread int t_threadindex = 0;
-
 
 static void
 _init(lua_State *L) {
@@ -87,14 +86,15 @@ _init(lua_State *L) {
 	lua_gc(dbL, LUA_GCCOLLECT , 0);
 	lua_gc(dbL, LUA_GCSTOP, 0);
 
+
 	g_dbL = dbL;
 }
 
 
 static int
 db_open(lua_State *L) {
-	int threadid = __sync_val_compare_and_swap (&t_threadid, 0, 1);
-	if (threadid == 0) {
+	int threadinit = __sync_val_compare_and_swap (&t_threadinit, 0, 1);
+	if (threadinit == 0) {
 		t_threadindex = __sync_fetch_and_add (&g_threadcount, 1);
 
 		if (t_threadindex == 1) {
@@ -142,13 +142,16 @@ db_open(lua_State *L) {
 
 static int
 db_get(lua_State *L) {
-	lua_State * dbL = lua_tothread(g_dbL, t_threadid);
+	lua_State * dbL = lua_tothread(g_dbL, t_threadindex);
+	assert(dbL);
 
 	size_t sz = 0;
 	const char * key = luaL_checklstring(L,1,&sz);
+
 	lua_pushlstring(dbL,key,sz);
 	lua_pushvalue(dbL,-1);
 	lua_rawget(dbL,INDEX);
+
 	int type = lua_type(dbL,-1);
 	switch(type) {
 	case LUA_TNIL:
@@ -169,16 +172,21 @@ db_get(lua_State *L) {
 		lua_pushboolean(L,v);
 		break;
 	}
-	case LUA_TTABLE :
-		lua_pushlightuserdata(L, (void*)lua_tostring(dbL, -2));
+	case LUA_TTABLE : {
+		void * keyname = (void*)lua_tostring(dbL, -2);
+		assert(keyname);
+		lua_pushlightuserdata(L, keyname);
 		lua_pushliteral(L, "table");
 		lua_pop(dbL,2);
 		return 2;
-	case LUA_TFUNCTION:
-		lua_pushlightuserdata(L, (void*)lua_tostring(dbL, -2));
+	}
+	case LUA_TFUNCTION: {
+		void * keyname = (void*)lua_tostring(dbL, -2);
+		lua_pushlightuserdata(L, keyname);
 		lua_pushliteral(L, "function");
 		lua_pop(dbL,2);
 		return 2;
+	}
 	default:
 		lua_pop(dbL,2);
 		luaL_error(L,"unsupported type: %s",lua_typename(dbL, type));
@@ -191,7 +199,7 @@ db_get(lua_State *L) {
 
 static int
 db_expend(lua_State *L) {
-	lua_State * dbL = lua_tothread(g_dbL, t_threadid);
+	lua_State * dbL = lua_tothread(g_dbL, t_threadindex);
 	int type = lua_type(L,1);
 	const char * key = NULL;
 	switch (type) {
