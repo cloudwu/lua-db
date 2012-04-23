@@ -5,16 +5,87 @@
 #include <string.h>
 #include <assert.h>
 
+#include "hash.h"
+
+static struct hash * g_Hash = NULL;
+static int g_Init = 0;
+
 #define DATA 1
 #define INDEX 2
-#define THREAD_MAX 32
-
-static lua_State * g_dbL = NULL;
-static int g_threadcount = 1;
-static __thread int t_threadinit = 0;
-static __thread int t_threadindex = 0;
 
 static void
+push_table(lua_State *L, struct hash * h, const char * key, size_t sz) {
+	size_t n = lua_rawlen(L, -1);
+	struct table tbl;
+	tbl.size = (int)n;
+	const char * data[n];
+	tbl.array = data;
+	int i;
+	for (i=0;i<tbl.size;i++) {
+		lua_rawgeti(L, -1 , i+1);
+		assert(lua_type(L, -1) == LUA_TSTRING);
+		data[i] = lua_tostring(L, -1);
+		lua_pop(L,1);
+	}
+
+	struct data d;
+	d.type = TYPE_TABLE;
+	d.v.tbl = &tbl;
+
+	hash_push(h, key, sz, &d);
+}
+
+static struct hash *
+convert_hash(lua_State *L , size_t *sz) {
+	struct hash * h = hash_new();
+	lua_pushnil(L);
+	struct data d;
+	while (lua_next(L, INDEX) != 0) {
+		if (lua_type(L,-2) == LUA_TSTRING) {
+			size_t sz = 0;
+			const char * key = lua_tolstring(L,-2,&sz);
+			switch(lua_type(L,-1)) {
+			case LUA_TNIL:
+				d.type = TYPE_NIL;
+				hash_push(h, key, sz, &d);
+				break;
+			case LUA_TSTRING:
+				d.type = TYPE_STRING;
+				d.v.str.str = lua_tolstring(L,-1,&d.v.str.len);
+				hash_push(h, key, sz, &d);
+				break;
+			case LUA_TBOOLEAN:
+				d.type = TYPE_BOOLEAN;
+				d.v.boolean = lua_toboolean(L,-1);
+				hash_push(h, key, sz, &d);
+				break;
+			case LUA_TNUMBER:
+				d.type = TYPE_NUMBER;
+				d.v.n = lua_tonumber(L,-1);
+				hash_push(h, key, sz, &d);
+				break;
+			case LUA_TFUNCTION:
+				lua_rawget(L,INDEX);
+				d.type = TYPE_FUNCTION;
+				d.v.str.str = lua_tolstring(L,-1,&d.v.str.len);
+				hash_push(h, key, sz, &d);
+				break;
+			case LUA_TTABLE:
+				push_table(L,h, key, sz);
+				break;
+			default:
+				luaL_error(L , "table has unsupport type : %s", lua_typename(L,lua_type(L,-1)));
+				break;
+			}
+		}
+		lua_pop(L,1);
+	}
+	*sz = hash_genpool(h);
+
+	return h;
+}
+
+static size_t
 _init(lua_State *L) {
 	const char * loader = luaL_checkstring(L,1);
 	lua_State * dbL = luaL_newstate();
@@ -70,186 +141,85 @@ _init(lua_State *L) {
 
 	lua_settop(dbL, 2);
 
-	lua_checkstack(dbL , THREAD_MAX + 2);
-	int i;
-	for (i=0;i < THREAD_MAX ; i++) {
-		lua_State * thread = lua_newthread(dbL);
-		lua_checkstack(thread , LUA_MINSTACK);
-		lua_pushvalue(dbL , DATA);
-		lua_pushvalue(dbL , INDEX);
-		lua_xmove(dbL , thread , 2);
-	}
+	size_t sz = 0;
 
-	lua_remove(dbL , 1);
-	lua_remove(dbL , 1);
+	g_Hash = convert_hash(dbL, &sz);
 
-	lua_gc(dbL, LUA_GCCOLLECT , 0);
-	lua_gc(dbL, LUA_GCSTOP, 0);
+	lua_close(dbL);
 
-
-	g_dbL = dbL;
+	return sz;
 }
 
 
 static int
 db_open(lua_State *L) {
-	int threadinit = __sync_val_compare_and_swap (&t_threadinit, 0, 1);
-	if (threadinit == 0) {
-		t_threadindex = __sync_fetch_and_add (&g_threadcount, 1);
-
-		if (t_threadindex == 1) {
-			// init
-			_init(L);
-		}
-
-		__sync_synchronize();
-
-		if (t_threadindex > THREAD_MAX) {
-			return luaL_error(L, "The number of threads is too a lot");
-		}
-		
+	int init = __sync_val_compare_and_swap (&g_Init, 0, 1);
+	if (init == 0) {
+		size_t sz = _init(L);
+		lua_pushinteger(L, sz);
+		return 1;
 	} else {
-		while (t_threadindex == 0) {
-			__sync_synchronize();
-		}
-
-		if (g_dbL == NULL) {
+		if (g_Hash == NULL) {
 			return luaL_error(L, "Global database init failed");
 		}
-
-		lua_State * dbL = lua_tothread(g_dbL, t_threadindex);
-		assert(dbL);
-
-		const char * loader = luaL_checkstring(L,1);
-
-		lua_getfield(dbL, LUA_REGISTRYINDEX , "loader");
-		if (lua_type(dbL,-1) != LUA_TSTRING) {
-			lua_settop(dbL, 2);
-			return luaL_error(L, "loader is not exist in db state");
-		}
-		const char * db_loader = lua_tostring(dbL,-1);
-		if (strcmp(loader,db_loader) != 0) {
-			lua_settop(dbL, 2);
-			return luaL_error(L, "db state loader is not the same with (%s)", loader);
-		}
-		lua_settop(dbL, 2);
 	}
-	int mem = lua_gc(g_dbL, LUA_GCCOUNT , 0);
-	lua_pushinteger(L, mem);
-	lua_pushinteger(L, t_threadindex);
-	return 2;
+	return 0;
 }
 
 static int
 db_get(lua_State *L) {
-	lua_State * dbL = lua_tothread(g_dbL, t_threadindex);
-	assert(dbL);
-
+	assert(g_Hash);
 	size_t sz = 0;
 	const char * key = luaL_checklstring(L,1,&sz);
+	struct data * d = hash_search(g_Hash , key, sz);
+	if (d==NULL) {
+		luaL_error(L, "%s is not exist", key);
+	}
 
-	lua_pushlstring(dbL,key,sz);
-	lua_pushvalue(dbL,-1);
-	lua_rawget(dbL,INDEX);
-
-	int type = lua_type(dbL,-1);
-	switch(type) {
-	case LUA_TNIL:
-		lua_pushnil(L);
-		break;
-	case LUA_TNUMBER: {
-		lua_Number v = lua_tonumber(dbL,-1);
-		lua_pushnumber(L,v);
-		break;
-	}
-	case LUA_TSTRING: {
-		const char *v = lua_tolstring(dbL,-1,&sz);
-		lua_pushlstring(L,v,sz);
-		break;
-	}
-	case LUA_TBOOLEAN: {
-		int v = lua_toboolean(dbL,-1);
-		lua_pushboolean(L,v);
-		break;
-	}
-	case LUA_TTABLE : {
-		void * keyname = (void*)lua_tostring(dbL, -2);
-		assert(keyname);
-		lua_pushlightuserdata(L, keyname);
-		lua_pushliteral(L, "table");
-		lua_pop(dbL,2);
+	switch(d->type) {
+	case TYPE_NIL:
+		return 0;
+	case TYPE_NUMBER:
+		lua_pushnumber(L, d->v.n);
+		return 1;
+	case TYPE_STRING:
+		lua_pushlstring(L, d->v.str.str, d->v.str.len);
+		return 1;
+	case TYPE_BOOLEAN:
+		lua_pushboolean(L, d->v.boolean);
+		return 1;
+	case TYPE_FUNCTION:
+		lua_pushlightuserdata(L, d);
+		lua_pushliteral(L,"function");
+		return 2;
+	case TYPE_TABLE:
+		lua_pushlightuserdata(L,d);
+		lua_pushliteral(L,"table");
 		return 2;
 	}
-	case LUA_TFUNCTION: {
-		void * keyname = (void*)lua_tostring(dbL, -2);
-		lua_pushlightuserdata(L, keyname);
-		lua_pushliteral(L, "function");
-		lua_pop(dbL,2);
-		return 2;
-	}
-	default:
-		lua_pop(dbL,2);
-		luaL_error(L,"unsupported type: %s",lua_typename(dbL, type));
-		break;
-	}
-
-	lua_pop(dbL,2);
-	return 1;
+	return luaL_error(L, "unknown type");
 }
 
 static int
 db_expend(lua_State *L) {
-	lua_State * dbL = lua_tothread(g_dbL, t_threadindex);
-	int type = lua_type(L,1);
-	const char * key = NULL;
-	switch (type) {
-	case LUA_TLIGHTUSERDATA :
-		key = (const char*)lua_touserdata(L,1);
-		lua_pushstring(dbL, key);
-		break;
-	case LUA_TSTRING : {
-		size_t sz = 0;
-		key = lua_tolstring(L,1,&sz);
-		lua_pushlstring(dbL,key,sz);
-		break;
-	}
-	default:
-		return luaL_error(L, "expand need a string");
-	}
-	lua_rawget(dbL, INDEX);
-	if (lua_isfunction(dbL, -1)) {
-		lua_rawget(dbL, INDEX);
-		if (!lua_isstring(dbL, -1)) {
-			lua_pop(dbL, 1);
-			return luaL_error(L, "expand an invalid function %s", key);
-		}
-		size_t sz = 0;
-		const char * code = lua_tolstring(dbL,-1,&sz);
-		lua_pushlstring(L, code, sz);
-		lua_pop(dbL, 1);
-		return 1;
-	}
-
-	if (!lua_istable(dbL, -1)) {
-		return luaL_error(L, "%s is not a table or function", key);
-	}
-
-	int len = lua_rawlen(dbL, -1);
-	lua_checkstack(L, 2 + len);
+	struct data *d = lua_touserdata(L,1);
+	assert(d);
 	int i;
-	for (i=0;i<len;i++) {
-		lua_rawgeti(dbL, -1, i+1);
-		size_t sz = 0;
-		const char * v = lua_tolstring(dbL, -1 , &sz);
-		if (v == NULL) {
-			return luaL_error(L, "%s is an invalid table", key);
+	switch (d->type) {
+	case TYPE_FUNCTION:
+		lua_pushlstring(L, d->v.str.str, d->v.str.len);
+		break;
+	case TYPE_TABLE:
+		lua_createtable(L, d->v.tbl->size , 0);
+		for (i=0;i<d->v.tbl->size;i++) {
+			lua_pushstring(L, d->v.tbl->array[i]);
+			lua_rawseti(L,-2,i+1);
 		}
-		lua_pushlstring(L, v , sz);
-		lua_pop(dbL,1);
+		break;
+	default:
+		return luaL_error(L, "unknown type");
 	}
-	lua_settop(dbL,2);
-
-	return len;
+	return 1;
 }
 
 int

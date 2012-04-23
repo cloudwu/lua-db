@@ -1,4 +1,4 @@
-database load data in an unique lua state , and share data among multi-states in the same process .
+database load data in an unique hash table , and share data among multi-states in the same process .
 
 database.open(loader name)  --  opens database state.
 
