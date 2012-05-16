@@ -125,8 +125,11 @@ _init(lua_State *L) {
 	err = lua_pcall(dbL, 0, 1, 0);
 
 	if (err) {
+		size_t len = 0;
+		const char * err = lua_tolstring(dbL, -1 , &len);
+		lua_pushlstring(L, err, len);
 		lua_close(dbL);
-		luaL_error(L, "posload : %s" , lua_tostring(dbL,-1));
+		luaL_error(L, "posload : %s" , lua_tostring(L,-1));
 	}
 
 	lua_insert(dbL, INDEX);
