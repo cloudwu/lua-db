@@ -96,7 +96,11 @@ _init(lua_State *L) {
 	int top = lua_gettop(dbL);
 	int err = luaL_dofile(dbL, loader);
 	if (err) {
-		luaL_error(L, "%s" , lua_tostring(dbL,-1));
+		size_t len = 0;
+		const char * err = lua_tolstring(dbL, -1 , &len);
+		lua_pushlstring(L, err, len);
+		lua_close(dbL);
+		luaL_error(L, "dofile : %s" , lua_tostring(L,-1));
 	}
 	lua_settop(dbL, top+1);
 	lua_insert(dbL, DATA);
