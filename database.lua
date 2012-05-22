@@ -1,4 +1,6 @@
 local c = require "database.c"
+local assert = assert
+local tostring = tostring
 
 local database = {}
 
@@ -36,7 +38,9 @@ function database.open(loader)
 	return c.open(loader , posload)
 end
 
-local ucache = setmetatable({} , { __mode = "v" } )
+local weak = { __mode = "v" }
+
+local ucache = setmetatable({} , weak )
 
 local function cache(v, t)
 	local ret = ucache[v]
@@ -54,12 +58,29 @@ local function cache(v, t)
 	return ret
 end
 
-function database.get(key)
+local fcache = setmetatable({} , weak)
+
+local function function_cache(v , key , env)
+	local h = tostring(v) .. tostring(env)
+	local ret = fcache[h]
+	if ret then
+		return ret
+	end
+	ret = load( c.expend(v), key , "b", env)
+	fcache[v] = ret
+
+	return ret
+end
+
+function database.get(key , env)
 	local v , t = c.get(key)
 	if type(v) ~= "userdata" then
 		return v
-	else
+	elseif env == nil then
 		return cache(v,t)
+	else
+		assert(t == "function")
+		return function_cache(v,key,env)
 	end
 end
 
