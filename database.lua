@@ -48,7 +48,7 @@ local function cache(v, t)
 		return ret
 	end
 	if t == "table" then
-		ret = { c.expend(v) }
+		ret = c.expend(v)
 	elseif t == "function" then
 		ret = load( c.expend(v) )
 	end
